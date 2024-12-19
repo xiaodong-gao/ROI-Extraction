@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <vector>
 #include <iostream>
+#include <chrono> // 包含 chrono 库
 #include <opencv2/opencv.hpp>
 
 struct ROI {
@@ -16,14 +17,14 @@ struct ROI {
     }
 };
 
-std::vector<ROI> splitImageWithOverlap(int imgWidth,
-    int imgHeight,
-    int startX,
-    int startY,
-    int roiWidth,
-    int roiHeight,
-    int stepX,
-    int stepY) {
+std::vector<ROI> splitImageWithOverlap( int imgWidth,
+                                        int imgHeight,
+                                        int startX,
+                                        int startY,
+                                        int roiWidth,
+                                        int roiHeight,
+                                        int stepX,
+                                        int stepY) {
     std::vector<ROI> rois;
     // 计算 ROI 的数量
     for (int y = startY; y + roiHeight <= imgHeight; y += stepY) {
@@ -95,7 +96,7 @@ __global__ void cropImageKernel(const uchar* inputImage, uchar* outputImage, int
 
 int main() {
     // 读取图像
-    cv::Mat image = cv::imread("image.bmp", cv::IMREAD_UNCHANGED);
+    cv::Mat image = cv::imread("1.bmp", cv::IMREAD_GRAYSCALE);
 
     // 检查图像是否成功读取
     if (image.empty()) {
@@ -107,8 +108,20 @@ int main() {
     int img_height = image.rows;  // 图像的高度
     int img_channels = image.channels();  // 图像的通道数，灰度图像通常为 1
 
+    // 重叠区域
+    int overlap_x = 28;
+    int overlap_y = 128;
+
+    // 子图像尺寸
+    int subWidth = 640;
+    int subHeight = 640;
+
+    // 步长
+    int strideX = subWidth - overlap_x; // 横向步长
+    int strideY = subHeight - overlap_y; // 纵向步长
+
     // 定义多个 ROI 区域
-    std::vector<ROI> rois = splitImageWithOverlap(img_width, img_height, 0, 0, 640, 640, 640, 640);
+    std::vector<ROI> rois = splitImageWithOverlap(img_width, img_height, 0, 0, subWidth, subHeight, strideX, strideY);
     int numROIs = rois.size();
     // 在 GPU 上分配内存
     uchar* d_inputImage;
@@ -130,12 +143,18 @@ int main() {
     //cropImageKernel <<<blocksPerGrid, threadsPerBlock >> > (d_inputImage, d_outputImage, img_width, img_height, numROIs, d_rois);
      // 调用 CUDA 内核进行裁剪
     // 确保每个线程块处理一个ROI
+    
+    auto start = std::chrono::high_resolution_clock::now();
     dim3 blockSize(32, 16);
     dim3 gridSize((rois.size() + blockSize.x - 1) / blockSize.x, 1);
     // 启动 CUDA 核函数
-    extractRoiKernel <<<gridSize, blockSize >>> (d_inputImage, d_outputImage, d_rois, numROIs, img_width, img_height,  img_channels);
-    // 等待 CUDA 核函数执行完毕
-    cudaDeviceSynchronize();
+
+    for (int i = 0; i < 100; i++) {
+        extractRoiKernel <<<gridSize, blockSize >> > (d_inputImage, d_outputImage, d_rois, numROIs, img_width, img_height, img_channels);
+        // 等待 CUDA 核函数执行完毕
+        cudaDeviceSynchronize();
+    }
+
 
     // 检查 CUDA 内核执行是否成功
     cudaError_t err = cudaGetLastError();
@@ -143,6 +162,15 @@ int main() {
         std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
         return -1;
     }
+
+    // 获取程序结束时间
+    auto end = std::chrono::high_resolution_clock::now();
+
+    // 计算时间差（持续时间）
+    std::chrono::duration<double, std::milli> duration = end - start;
+
+    // 输出执行时间（单位：毫秒）
+    std::cout << "Execution time: " << duration.count() << " milliseconds" << std::endl;
 
     // 从 GPU 拷贝裁剪结果回 CPU
     std::vector<uchar> outputImage(numROIs * 640 * 640);       // 假设最大尺寸是 100x100
